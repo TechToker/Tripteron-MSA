@@ -106,11 +106,23 @@ def T_3D(theta_tx, theta_ty, theta_tz, theta_rx, theta_ry, theta_rz):
 def GetForwardKinematics(base, legs_q_a, legs_q_p, thetas, links):
     legs_fk = []
 
+    T_tool_z = np.eye(4)
+    T_tool_y = np.linalg.inv(Rx(-np.pi / 2))
+    T_tool_x = np.linalg.multi_dot([np.linalg.inv(Rz(np.pi)), np.linalg.inv(Ry(np.pi / 2))])
+    T_tool = [T_tool_x, T_tool_y, T_tool_z]
+
+    T_platform_z = np.linalg.multi_dot([Tx(-0.1 * np.sin(np.pi / 6)), Ty(0.1 * np.cos(np.pi / 6))])
+    T_platform_y = Tx(0.1)
+    T_platform_x = np.linalg.multi_dot([Tx(-0.1 * np.sin(np.pi / 6)), Ty(-0.1 * np.cos(np.pi / 6))])
+    T_platform = [T_platform_x, T_platform_y, T_platform_z]
+
     for leg in range(len(base)):
         legBase = base[leg]
-        leg_q_active = legs_q_a[leg]
+        leg_q_active = legs_q_a
         leg_q_passive = legs_q_p[leg]
         leg_theta = thetas[leg]
+        T_tool_l = T_tool[leg]
+        T_platform_l = T_platform[leg]
 
         T_3D_2_7 = T_3D(leg_theta[1], leg_theta[2], leg_theta[3], leg_theta[4], leg_theta[5], leg_theta[6])
         T_3D_8_13 = T_3D(leg_theta[7], leg_theta[8], leg_theta[9], leg_theta[10], leg_theta[11], leg_theta[12])
@@ -123,7 +135,7 @@ def GetForwardKinematics(base, legs_q_a, legs_q_p, thetas, links):
                                            Rz(leg_q_passive[1]),
                                            Tx(links[1]),
                                            T_3D_8_13,
-                                           Rz(leg_q_passive[2])])
+                                           Rz(leg_q_passive[2]), T_tool_l, T_platform_l])
 
         T_leg = np.linalg.multi_dot([legBase, T_leg_local])
         legs_fk.append(T_leg)
@@ -143,18 +155,40 @@ def GetPlatformEdges(position):
     posForArmZ[1] -= np.sqrt(0.1 ** 2 - 0.05 ** 2)
     posForArmZ[0] += 0.05
 
-    return [posForArmX, posForArmY, posForArmZ]
+    return [position, position, position]
 
 
 def getInverseKinematic(leg_bases, platform_edges, links):
     legs_q = []
-
+    d_array = []
+    T_tool_z = np.eye(4)
+    T_tool_y = np.linalg.inv(Rx(-np.pi / 2))
+    T_tool_x = np.linalg.multi_dot([np.linalg.inv(Rz(np.pi)), np.linalg.inv(Ry(np.pi / 2))])
+    Ttools = [T_tool_x, T_tool_y, T_tool_z]
     for i in range(len(leg_bases)):
-        base = leg_bases[i]
-        r_base = base[0:3, 0:3]
-        p_base = base[0:3, 3]
+        if i == 2:
+            Tplat = np.linalg.multi_dot(
+                [np.linalg.inv(Ty(0.1 * np.cos(np.pi / 6))), np.linalg.inv(Tx(-0.1 * np.sin(np.pi / 6)))])
+            d = platform_edges[i][2]
+        elif i == 1:
+            Tplat = np.linalg.inv(Tx(0.1))
+            d = platform_edges[i][1]
+        else:
+            Tplat = np.linalg.multi_dot(
+                [np.linalg.inv(Ty(-0.1 * np.cos(np.pi / 6))), np.linalg.inv(Tx(-0.1 * np.sin(np.pi / 6)))])
+            d = platform_edges[i][0] + 0.1 * np.sin(np.pi / 6)
 
-        xlocal, ylocal, zlocal = np.transpose(r_base).dot(platform_edges[i] - p_base)
+        base = leg_bases[i]
+        T_g = np.eye(4)
+        T_g[0:3, 3] = platform_edges[i]
+
+        Tloc = np.linalg.multi_dot([np.linalg.inv(leg_bases[i]), T_g, Tplat, np.linalg.inv(Ttools[i])])
+        # print(Tloc)
+        xlocal, ylocal, zlocal = Tloc[0:3, 3]
+
+        x = Tloc[0, 3];
+
+        y = Tloc[1, 3];
 
         cos_q2 = (xlocal ** 2 + ylocal ** 2 - links[0] ** 2 - links[1] ** 2) / (2 * links[0] * links[1])
         sin_q2 = np.sqrt(1 - cos_q2 ** 2)
@@ -164,9 +198,10 @@ def getInverseKinematic(leg_bases, platform_edges, links):
         q3 = -(q1 + q2)
 
         leg_q = np.array([q1, q2, q3])
+        d_array.append(d)
         legs_q.append(leg_q)
 
-    return legs_q
+    return [legs_q, d_array]
 
 
 def getLegJacobian(base, dT_leg_local, inv_FK):
@@ -175,14 +210,14 @@ def getLegJacobian(base, dT_leg_local, inv_FK):
     return J
 
 
-def getPassiveLegJacobian(leg_fk, base, q_a, q_p, theta, links):
+def getPassiveLegJacobian(leg_fk, base, q_a, q_p, theta, links, T_tool, T_platform):
     leg_fk[0:3, 3] = 0
     inv_FK = np.transpose(leg_fk)
 
     T_3D_2_7 = T_3D(theta[1], theta[2], theta[3], theta[4], theta[5], theta[6])
     T_3D_8_13 = T_3D(theta[7], theta[8], theta[9], theta[10], theta[11], theta[12])
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_a[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_a),
                                         Tz(theta[0]),
                                         dRz(q_p[0]),
                                         Tx(links[0]),
@@ -190,10 +225,10 @@ def getPassiveLegJacobian(leg_fk, base, q_a, q_p, theta, links):
                                         Rz(q_p[1]),
                                         Tx(links[1]),
                                         T_3D_8_13,
-                                        Rz(q_p[2])])
-    J1 = getLegJacobian(base, dT_leg_local, inv_FK )
+                                        Rz(q_p[2]), T_tool, T_platform])
+    J1 = getLegJacobian(base, dT_leg_local, inv_FK)
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_a[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_a),
                                         Tz(theta[0]),
                                         Rz(q_p[0]),
                                         Tx(links[0]),
@@ -201,11 +236,11 @@ def getPassiveLegJacobian(leg_fk, base, q_a, q_p, theta, links):
                                         dRz(q_p[1]),
                                         Tx(links[1]),
                                         T_3D_8_13,
-                                        Rz(q_p[2])])
+                                        Rz(q_p[2]), T_tool, T_platform])
 
-    J2 = getLegJacobian(base, dT_leg_local, inv_FK )
+    J2 = getLegJacobian(base, dT_leg_local, inv_FK)
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_a[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_a),
                                         Tz(theta[0]),
                                         Rz(q_p[0]),
                                         Tx(links[0]),
@@ -213,32 +248,33 @@ def getPassiveLegJacobian(leg_fk, base, q_a, q_p, theta, links):
                                         Rz(q_p[1]),
                                         Tx(links[1]),
                                         T_3D_8_13,
-                                        dRz(q_p[2])])
+                                        dRz(q_p[2]), T_tool, T_platform])
 
-    J3 = getLegJacobian(base, dT_leg_local, inv_FK )
+    J3 = getLegJacobian(base, dT_leg_local, inv_FK)
 
     J = np.hstack([J1, J2, J3])
     return J
 
 
-def GetJacobianForPassive(base, q_active, q_passive, theta, link):
+def GetJacobianForPassive(base, q_active, q_passive, theta, link, T_tool, T_platform):
     FK = GetForwardKinematics(base, q_active, q_passive, theta, link)
 
     Jq = []
     for leg in range(len(base)):
-        J = getPassiveLegJacobian(FK[leg], base[leg], q_active[leg], q_passive[leg], theta[leg], link)
+        J = getPassiveLegJacobian(FK[leg], base[leg], q_active[leg], q_passive[leg], theta[leg], link, T_tool[leg],
+                                  T_platform[leg])
         Jq.append(J)
     return Jq
 
 
-def GetThetaLegJacobian(FK, base, q_active, q_passive, thetas, links):
+def GetThetaLegJacobian(FK, base, q_active, q_passive, thetas, links, T_tool, T_platform):
     FK[0:3, 3] = 0
     inv_FK = np.transpose(FK)
 
     T_3D_2_7 = T_3D(thetas[1], thetas[2], thetas[3], thetas[4], thetas[5], thetas[6])
     T_3D_8_13 = T_3D(thetas[7], thetas[8], thetas[9], thetas[10], thetas[11], thetas[12])
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_active[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_active),
                                         dTz(thetas[0]),
                                         Rz(q_passive[0]),
                                         Tx(links[0]),
@@ -247,177 +283,190 @@ def GetThetaLegJacobian(FK, base, q_active, q_passive, thetas, links):
                                         Tx(links[1]),
                                         T_3D_8_13,
                                         Rz(thetas[12]),
-                                        Rz(q_passive[2])])
+                                        Rz(q_passive[2]), T_tool, T_platform])
 
-    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK ])
+    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK])
     J1 = np.vstack([dT_leg[0, 3], dT_leg[1, 3], dT_leg[2, 3], dT_leg[2, 1], dT_leg[0, 2], dT_leg[1, 0]])
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_active[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_active),
                                         Tz(thetas[0]),
                                         Rz(q_passive[0]),
                                         Tx(links[0]),
-                                        dTx(thetas[1]), Ty(thetas[2]), Tz(thetas[3]), Rx(thetas[4]), Ry(thetas[5]), Rz(thetas[6]),
+                                        dTx(thetas[1]), Ty(thetas[2]), Tz(thetas[3]), Rx(thetas[4]), Ry(thetas[5]),
+                                        Rz(thetas[6]),
                                         Rz(q_passive[1]),
                                         Tx(links[1]),
                                         T_3D_8_13,
-                                        Rz(q_passive[2])])
+                                        Rz(q_passive[2]), T_tool, T_platform])
 
-    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK ])
+    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK])
     J2 = np.vstack([dT_leg[0, 3], dT_leg[1, 3], dT_leg[2, 3], dT_leg[2, 1], dT_leg[0, 2], dT_leg[1, 0]])
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_active[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_active),
                                         Tz(thetas[0]),
                                         Rz(q_passive[0]),
                                         Tx(links[0]),
-                                        Tx(thetas[1]), dTy(thetas[2]), Tz(thetas[3]), Rx(thetas[4]), Ry(thetas[5]), Rz(thetas[6]),
+                                        Tx(thetas[1]), dTy(thetas[2]), Tz(thetas[3]), Rx(thetas[4]), Ry(thetas[5]),
+                                        Rz(thetas[6]),
                                         Rz(q_passive[1]),
                                         Tx(links[1]),
                                         T_3D_8_13,
-                                        Rz(q_passive[2])])
+                                        Rz(q_passive[2]), T_tool, T_platform])
 
-    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK ])
+    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK])
     J3 = np.vstack([dT_leg[0, 3], dT_leg[1, 3], dT_leg[2, 3], dT_leg[2, 1], dT_leg[0, 2], dT_leg[1, 0]])
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_active[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_active),
                                         Tz(thetas[0]),
                                         Rz(q_passive[0]),
                                         Tx(links[0]),
-                                        Tx(thetas[1]), Ty(thetas[2]), dTz(thetas[3]), Rx(thetas[4]), Ry(thetas[5]), Rz(thetas[6]),
+                                        Tx(thetas[1]), Ty(thetas[2]), dTz(thetas[3]), Rx(thetas[4]), Ry(thetas[5]),
+                                        Rz(thetas[6]),
                                         Rz(q_passive[1]),
                                         Tx(links[1]),
                                         T_3D_8_13,
-                                        Rz(q_passive[2])])
+                                        Rz(q_passive[2]), T_tool, T_platform])
 
-    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK ])
+    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK])
     J4 = np.vstack([dT_leg[0, 3], dT_leg[1, 3], dT_leg[2, 3], dT_leg[2, 1], dT_leg[0, 2], dT_leg[1, 0]])
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_active[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_active),
                                         Tz(thetas[0]),
                                         Rz(q_passive[0]),
                                         Tx(links[0]),
-                                        Tx(thetas[1]), Ty(thetas[2]), Tz(thetas[3]), dRx(thetas[4]), Ry(thetas[5]), Rz(thetas[6]),
+                                        Tx(thetas[1]), Ty(thetas[2]), Tz(thetas[3]), dRx(thetas[4]), Ry(thetas[5]),
+                                        Rz(thetas[6]),
                                         Rz(q_passive[1]),
                                         Tx(links[1]),
                                         T_3D_8_13,
-                                        Rz(q_passive[2])])
+                                        Rz(q_passive[2]), T_tool, T_platform])
 
-    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK ])
+    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK])
     J5 = np.vstack([dT_leg[0, 3], dT_leg[1, 3], dT_leg[2, 3], dT_leg[2, 1], dT_leg[0, 2], dT_leg[1, 0]])
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_active[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_active),
                                         Tz(thetas[0]),
                                         Rz(q_passive[0]),
                                         Tx(links[0]),
-                                        Tx(thetas[1]), Ty(thetas[2]), Tz(thetas[3]), Rx(thetas[4]), dRy(thetas[5]), Rz(thetas[6]),
+                                        Tx(thetas[1]), Ty(thetas[2]), Tz(thetas[3]), Rx(thetas[4]), dRy(thetas[5]),
+                                        Rz(thetas[6]),
                                         Rz(q_passive[1]),
                                         Tx(links[1]),
                                         T_3D_8_13,
-                                        Rz(q_passive[2])])
+                                        Rz(q_passive[2]), T_tool, T_platform])
 
     dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK])
     J6 = np.vstack([dT_leg[0, 3], dT_leg[1, 3], dT_leg[2, 3], dT_leg[2, 1], dT_leg[0, 2], dT_leg[1, 0]])
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_active[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_active),
                                         Tz(thetas[0]),
                                         Rz(q_passive[0]),
                                         Tx(links[0]),
-                                        Tx(thetas[1]), Ty(thetas[2]), Tz(thetas[3]), Rx(thetas[4]), Ry(thetas[5]), dRz(thetas[6]),
+                                        Tx(thetas[1]), Ty(thetas[2]), Tz(thetas[3]), Rx(thetas[4]), Ry(thetas[5]),
+                                        dRz(thetas[6]),
                                         Rz(q_passive[1]),
                                         Tx(links[1]),
                                         T_3D_8_13,
-                                        Rz(q_passive[2])])
+                                        Rz(q_passive[2]), T_tool, T_platform])
 
-    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK ])
+    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK])
     J7 = np.vstack([dT_leg[0, 3], dT_leg[1, 3], dT_leg[2, 3], dT_leg[2, 1], dT_leg[0, 2], dT_leg[1, 0]])
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_active[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_active),
                                         Tz(thetas[0]),
                                         Rz(q_passive[0]),
                                         Tx(links[0]),
                                         T_3D_2_7,
                                         Rz(q_passive[1]),
                                         Tx(links[1]),
-                                        dTx(thetas[7]), Ty(thetas[8]), Tz(thetas[9]), Rx(thetas[10]), Ry(thetas[11]), Rz(thetas[12]),
-                                        Rz(q_passive[2])])
+                                        dTx(thetas[7]), Ty(thetas[8]), Tz(thetas[9]), Rx(thetas[10]), Ry(thetas[11]),
+                                        Rz(thetas[12]),
+                                        Rz(q_passive[2]), T_tool, T_platform])
 
     dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK])
     J8 = np.vstack([dT_leg[0, 3], dT_leg[1, 3], dT_leg[2, 3], dT_leg[2, 1], dT_leg[0, 2], dT_leg[1, 0]])
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_active[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_active),
                                         Tz(thetas[0]),
                                         Rz(q_passive[0]),
                                         Tx(links[0]),
                                         T_3D_2_7,
                                         Rz(q_passive[1]),
                                         Tx(links[1]),
-                                        Tx(thetas[7]), dTy(thetas[8]), Tz(thetas[9]), Rx(thetas[10]), Ry(thetas[11]), Rz(thetas[12]),
-                                        Rz(q_passive[2])])
+                                        Tx(thetas[7]), dTy(thetas[8]), Tz(thetas[9]), Rx(thetas[10]), Ry(thetas[11]),
+                                        Rz(thetas[12]),
+                                        Rz(q_passive[2]), T_tool, T_platform])
 
-    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK  ])
+    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK])
     J9 = np.vstack([dT_leg[0, 3], dT_leg[1, 3], dT_leg[2, 3], dT_leg[2, 1], dT_leg[0, 2], dT_leg[1, 0]])
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_active[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_active),
                                         Tz(thetas[0]),
                                         Rz(q_passive[0]),
                                         Tx(links[0]),
                                         T_3D_2_7,
                                         Rz(q_passive[1]),
                                         Tx(links[1]),
-                                        Tx(thetas[7]), Ty(thetas[8]), dTz(thetas[9]), Rx(thetas[10]), Ry(thetas[11]), Rz(thetas[12]),
-                                        Rz(q_passive[2])])
+                                        Tx(thetas[7]), Ty(thetas[8]), dTz(thetas[9]), Rx(thetas[10]), Ry(thetas[11]),
+                                        Rz(thetas[12]),
+                                        Rz(q_passive[2]), T_tool, T_platform])
 
-    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK ])
+    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK])
     J10 = np.vstack([dT_leg[0, 3], dT_leg[1, 3], dT_leg[2, 3], dT_leg[2, 1], dT_leg[0, 2], dT_leg[1, 0]])
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_active[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_active),
                                         Tz(thetas[0]),
                                         Rz(q_passive[0]),
                                         Tx(links[0]),
                                         T_3D_2_7,
                                         Rz(q_passive[1]),
                                         Tx(links[1]),
-                                        Tx(thetas[7]), Ty(thetas[8]), Tz(thetas[9]), dRx(thetas[10]), Ry(thetas[11]), Rz(thetas[12]),
-                                        Rz(q_passive[2])])
+                                        Tx(thetas[7]), Ty(thetas[8]), Tz(thetas[9]), dRx(thetas[10]), Ry(thetas[11]),
+                                        Rz(thetas[12]),
+                                        Rz(q_passive[2]), T_tool, T_platform])
 
-    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK ])
+    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK])
     J11 = np.vstack([dT_leg[0, 3], dT_leg[1, 3], dT_leg[2, 3], dT_leg[2, 1], dT_leg[0, 2], dT_leg[1, 0]])
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_active[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_active),
                                         Tz(thetas[0]),
                                         Rz(q_passive[0]),
                                         Tx(links[0]),
                                         T_3D_2_7,
                                         Rz(q_passive[1]),
                                         Tx(links[1]),
-                                        Tx(thetas[7]), Ty(thetas[8]), Tz(thetas[9]), Rx(thetas[10]), dRy(thetas[11]), Rz(thetas[12]),
-                                        Rz(q_passive[2])])
+                                        Tx(thetas[7]), Ty(thetas[8]), Tz(thetas[9]), Rx(thetas[10]), dRy(thetas[11]),
+                                        Rz(thetas[12]),
+                                        Rz(q_passive[2]), T_tool, T_platform])
 
-    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK ])
+    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK])
     J12 = np.vstack([dT_leg[0, 3], dT_leg[1, 3], dT_leg[2, 3], dT_leg[2, 1], dT_leg[0, 2], dT_leg[1, 0]])
 
-    dT_leg_local = np.linalg.multi_dot([Tz(q_active[0]),
+    dT_leg_local = np.linalg.multi_dot([Tz(q_active),
                                         Tz(thetas[0]),
                                         Rz(q_passive[0]),
                                         Tx(links[0]),
                                         T_3D_2_7,
                                         Rz(q_passive[1]),
                                         Tx(links[1]),
-                                        Tx(thetas[7]), Ty(thetas[8]), Tz(thetas[9]), Rx(thetas[10]), Ry(thetas[11]), dRz(thetas[12]),
-                                        Rz(q_passive[2])])
+                                        Tx(thetas[7]), Ty(thetas[8]), Tz(thetas[9]), Rx(thetas[10]), Ry(thetas[11]),
+                                        dRz(thetas[12]),
+                                        Rz(q_passive[2]), T_tool, T_platform])
 
-    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK ])
+    dT_leg = np.linalg.multi_dot([base, dT_leg_local, inv_FK])
     J13 = np.vstack([dT_leg[0, 3], dT_leg[1, 3], dT_leg[2, 3], dT_leg[2, 1], dT_leg[0, 2], dT_leg[1, 0]])
 
     J = np.hstack([J1, J2, J3, J4, J5, J6, J7, J8, J9, J10, J11, J12, J13])
     return J
 
 
-def GetJacobianForTheta(base, q_active, q_passive, theta, link):
+def GetJacobianForTheta(base, q_active, q_passive, theta, link, T_tool, T_platform):
     FK = GetForwardKinematics(base, q_active, q_passive, theta, link)
 
     Jtheta = []
     for leg in range(len(base)):
-        J = GetThetaLegJacobian(FK[leg], base[leg], q_active[leg], q_passive[leg], theta[leg], link)
+        J = GetThetaLegJacobian(FK[leg], base[leg], q_active[leg], q_passive[leg], theta[leg], link, T_tool[leg],
+                                T_platform[leg])
         Jtheta.append(J)
     return Jtheta
 
@@ -464,21 +513,21 @@ def KcTripteronVJM(Ktheta, Jq, Jtheta):
 
 def getLinkTransformations(base, links, q, theta, ee_pos):
     link_1 = np.linalg.multi_dot([base,
-                                     Tz(ee_pos),
-                                     # virtual spring
-                                     Tz(theta[0]),
-                                     Rz(q[0])])
+                                  Tz(ee_pos),
+                                  # virtual spring
+                                  Tz(theta[0]),
+                                  Rz(q[0])])
     link_2 = np.linalg.multi_dot([link_1,
-                                      Tx(links[0]),
-                                      # virtual spring
-                                      T_3D(theta[1], theta[2], theta[3], theta[4], theta[5], theta[6]),
-                                      Rz(q[1])])
+                                  Tx(links[0]),
+                                  # virtual spring
+                                  T_3D(theta[1], theta[2], theta[3], theta[4], theta[5], theta[6]),
+                                  Rz(q[1])])
 
     link_3 = np.linalg.multi_dot([link_2,
-                                      Tx(links[1]),
-                                      # virtual spring
-                                      T_3D(theta[7], theta[8], theta[9], theta[10], theta[11], theta[12]),
-                                      Rz(q[2])])
+                                  Tx(links[1]),
+                                  # virtual spring
+                                  T_3D(theta[7], theta[8], theta[9], theta[10], theta[11], theta[12]),
+                                  Rz(q[2])])
 
     return link_1, link_2, link_3
 
@@ -556,9 +605,21 @@ def CalculateDeflections(links, forces):
     z_pos = np.array([])
     deflections = np.array([])
 
+    T_tool_z = np.eye(4)
+    T_tool_y = np.linalg.inv(Rx(-np.pi / 2))
+    T_tool_x = np.linalg.multi_dot([np.linalg.inv(Rz(np.pi)), np.linalg.inv(Ry(np.pi / 2))])
+    T_tool = [T_tool_x, T_tool_y, T_tool_z]
+
+    T_platform_z = np.linalg.multi_dot([Tx(-0.1 * np.sin(np.pi / 6)), Ty(0.1 * np.cos(np.pi / 6))])
+    T_platform_y = Tx(0.1)
+    T_platform_x = np.linalg.multi_dot([Tx(-0.1 * np.sin(np.pi / 6)), Ty(-0.1 * np.cos(np.pi / 6))])
+    T_platform = [T_platform_x, T_platform_y, T_platform_z]
+
+
     xlinSpace = np.linspace(0.001, 1, 16)
     ylinSpace = np.linspace(0.001, 1, 16)
     zlinSpace = np.linspace(0.001, 1, 16)
+
 
     for x in xlinSpace:
         xData = np.array([])
@@ -569,12 +630,13 @@ def CalculateDeflections(links, forces):
         for y in ylinSpace:
             for z in zlinSpace:
                 ee_pos = np.array([x, y, z])
-                q_active = [[ee_pos[0]], [ee_pos[1]], [ee_pos[2]]]
-                plt_edges = GetPlatformEdges(ee_pos)
-                q_passive = getInverseKinematic(T_base, plt_edges, links)
 
-                Jq = GetJacobianForPassive(T_base, q_active, q_passive, virtual_joints, links)
-                Jtheta = GetJacobianForTheta(T_base, q_active, q_passive, virtual_joints, links)
+                plt_edges = GetPlatformEdges(ee_pos)
+                q_passive, d = getInverseKinematic(T_base, plt_edges, links)
+                # print(d)
+                q_active = d
+                Jq = GetJacobianForPassive(T_base, q_active, q_passive, virtual_joints, links, T_tool, T_platform)
+                Jtheta = GetJacobianForTheta(T_base, q_active, q_passive, virtual_joints, links, T_tool, T_platform)
 
                 Kc = KcTripteronVJM(virtual_k, Jq, Jtheta)
 
@@ -619,7 +681,7 @@ i_p = i_y + i_z
 virtual_stiffness = KThetaLeg(K_active, e, g, a, i_y, i_z, i_p, link_lengths[0])
 virtual_k = [virtual_stiffness, virtual_stiffness, virtual_stiffness]
 
-externalForce = np.array([[100], [0], [0], [0], [0], [0]])
+externalForce = np.array([[0], [0], [100], [0], [0], [0]])
 
 
 def Main():
@@ -628,7 +690,7 @@ def Main():
     # Plot FK
     p_global = np.array([0.5, 0.5, 0.5])
     p_fake_global = GetPlatformEdges(p_global)
-    q_passive = getInverseKinematic(T_base, p_fake_global, link_lengths)
+    q_passive, d = getInverseKinematic(T_base, p_fake_global, link_lengths)
 
     # Deflections
     xScatter, yScatter, zScatter, dScatter = CalculateDeflections(link_lengths, externalForce)

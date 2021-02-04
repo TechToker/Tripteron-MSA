@@ -81,15 +81,48 @@ def GetK22(E, G, A, Iy, Iz, Ip, link_length):
     return K
 
 
-def getInverseKinematic(leg_bases, platform_edges, links):
+def GetPlatformEdges(position):
+    posForArmX = [position[0], position[1], position[2]]
+    posForArmX[1] += np.sqrt(0.1 ** 2 - 0.05 ** 2)
+    posForArmX[0] += 0.05
+
+    posForArmY = [position[0], position[1], position[2]]
+    posForArmY[0] -= 0.1
+
+    posForArmZ = [position[0], position[1], position[2]]
+    posForArmZ[1] -= np.sqrt(0.1 ** 2 - 0.05 ** 2)
+    posForArmZ[0] += 0.05
+
+    return [position, position, position]
+
+
+def getInverseKinematic(leg_bases, Ttools, platform_edges, links):
     legs_q = []
 
     for i in range(len(leg_bases)):
-        base = leg_bases[i]
-        r_base = base[0:3, 0:3]
-        p_base = base[0:3, 3]
+        if i == 2:
+            Tplat = np.linalg.multi_dot(
+                [np.linalg.inv(Ty(0.1 * np.cos(np.pi / 6))), np.linalg.inv(Tx(-0.1 * np.sin(np.pi / 6)))])
+            d = platform_edges[i][2]
+        elif i == 1:
+            Tplat = np.linalg.inv(Tx(0.1))
+            d = platform_edges[i][1]
+        else:
+            Tplat = np.linalg.multi_dot(
+                [np.linalg.inv(Ty(-0.1 * np.cos(np.pi / 6))), np.linalg.inv(Tx(-0.1 * np.sin(np.pi / 6)))])
+            d = platform_edges[i][0] + 0.1 * np.sin(np.pi / 6)
 
-        xlocal, ylocal, zlocal = np.transpose(r_base).dot(platform_edges[i] - p_base)
+        base = leg_bases[i]
+        T_g = np.eye(4)
+        T_g[0:3, 3] = platform_edges[i]
+
+        Tloc = np.linalg.multi_dot([np.linalg.inv(leg_bases[i]), T_g, Tplat, np.linalg.inv(Ttools[i])])
+        # print(Tloc)
+        xlocal, ylocal, zlocal = Tloc[0:3, 3]
+
+        x = Tloc[0, 3];
+
+        y = Tloc[1, 3];
 
         cos_q2 = (xlocal ** 2 + ylocal ** 2 - links[0] ** 2 - links[1] ** 2) / (2 * links[0] * links[1])
         sin_q2 = np.sqrt(1 - cos_q2 ** 2)
@@ -138,10 +171,9 @@ def getMatrixQ(bases, ee_positions, legs_q, links):
 
 
 def getKc(Q, K11, K12, K21, K22, lmbda_e_12, lmbda_r_12, lmbda_r_34, lmbda_r_56, lmbda_r_78,
-                   lmbda_p_34, lmbda_p_56, lmbda_p_78, D_8e):
+          lmbda_p_34, lmbda_p_56, lmbda_p_78, D_8e):
     Kc = []
     for i in range(len(Q)):
-
         Q1 = Q[i][0]
         K11_45 = np.linalg.multi_dot([Q1, K11, np.transpose(Q1)])
         K12_45 = np.linalg.multi_dot([Q1, K12, np.transpose(Q1)])
@@ -157,8 +189,8 @@ def getKc(Q, K11, K12, K21, K22, lmbda_e_12, lmbda_r_12, lmbda_r_34, lmbda_r_56,
         row1 = np.hstack([np.zeros((6, 6 * 9)), np.eye(6), np.zeros((6, 6 * 7))])
         row2 = np.hstack([np.zeros((6, 6 * 3)), -np.eye(6), np.zeros((6, 6 * 8)), K11_45, K12_45, np.zeros((6, 6 * 3))])
         row3 = np.hstack([np.zeros((6, 6 * 4)), -np.eye(6), np.zeros((6, 6 * 7)), K21_45, K22_45, np.zeros((6, 6 * 3))])
-        row4 = np.hstack([np.zeros((6, 6 * 5)), -np.eye(6), np.zeros((6, 6 * 8)), K11_67, K12_67, np.zeros((6, 6*1))])
-        row5 = np.hstack([np.zeros((6, 6 * 6)), -np.eye(6), np.zeros((6, 6 * 7)), K21_67, K22_67, np.zeros((6, 6*1))])
+        row4 = np.hstack([np.zeros((6, 6 * 5)), -np.eye(6), np.zeros((6, 6 * 8)), K11_67, K12_67, np.zeros((6, 6 * 1))])
+        row5 = np.hstack([np.zeros((6, 6 * 6)), -np.eye(6), np.zeros((6, 6 * 7)), K21_67, K22_67, np.zeros((6, 6 * 1))])
         row6 = np.hstack([np.zeros((6, 6 * 16)), D_8e[i]])
 
         row7 = np.hstack([np.zeros((6, 6 * 7)), np.eye(6), np.transpose(D_8e[i]), np.zeros((6, 6 * 8))])
@@ -202,19 +234,19 @@ def getKc(Q, K11, K12, K21, K22, lmbda_e_12, lmbda_r_12, lmbda_r_34, lmbda_r_56,
     return Kc
 
 
-def GetPlatformEdges(position):
-    posForArmX = [position[0], position[1], position[2]]
-    posForArmX[1] += np.sqrt(0.1 ** 2 - 0.05 ** 2)
-    posForArmX[0] += 0.05
+# def GetPlatformEdges(position):
+#     posForArmX = [position[0], position[1], position[2]]
+#     posForArmX[1] += np.sqrt(0.1 ** 2 - 0.05 ** 2)
+#     posForArmX[0] += 0.05
 
-    posForArmY = [position[0], position[1], position[2]]
-    posForArmY[0] -= 0.1
+#     posForArmY = [position[0], position[1], position[2]]
+#     posForArmY[0] -= 0.1
 
-    posForArmZ = [position[0], position[1], position[2]]
-    posForArmZ[1] -= np.sqrt(0.1 ** 2 - 0.05 ** 2)
-    posForArmZ[0] += 0.05
+#     posForArmZ = [position[0], position[1], position[2]]
+#     posForArmZ[1] -= np.sqrt(0.1 ** 2 - 0.05 ** 2)
+#     posForArmZ[0] += 0.05
 
-    return [posForArmX, posForArmY, posForArmZ]
+#     return [posForArmX, posForArmY, posForArmZ]
 
 
 def plotModel(bases, ee_pos, legs_q, link, platform_nodes):
@@ -290,9 +322,9 @@ def CalculateDeflections(links, forces):
     z_pos = np.array([])
     deflections = np.array([])
 
-    xlinSpace = np.linspace(0, 1, 16)
-    ylinSpace = np.linspace(0, 1, 16)
-    zlinSpace = np.linspace(0, 1, 16)
+    xlinSpace = np.linspace(0.001, 1, 16)
+    ylinSpace = np.linspace(0.001, 1, 16)
+    zlinSpace = np.linspace(0.001, 1, 16)
 
     for x in xlinSpace:
         xData = np.array([])
@@ -302,9 +334,9 @@ def CalculateDeflections(links, forces):
 
         for y in ylinSpace:
             for z in zlinSpace:
-                end_eff_pos = np.array([x, y, z])
+                end_eff_pos = np.array([x + 0.1 * np.sin(np.pi / 6), y, z])
                 platform_edges = GetPlatformEdges(end_eff_pos)
-                ik_q = getInverseKinematic(T_base, platform_edges, links)
+                ik_q = getInverseKinematic(T_base, T_tool, platform_edges, links)
 
                 # plotTripteron(T_base, p_global, q_passive, theta, link, p_fake_global)
 
@@ -391,14 +423,21 @@ lambda_p_34 = [lambda_p_34_x, lambda_p_34_y, lambda_p_34_z]
 lambda_p_56 = [lambda_p_56_x, lambda_p_56_y, lambda_p_56_z]
 lambda_p_78 = [lambda_p_78_x, lambda_p_78_y, lambda_p_78_z]
 
-dx = np.array([[0, 0, -np.sqrt(0.1 ** 2 - 0.05 ** 2)], [0, 0, 0.05], [np.sqrt(0.1 ** 2 - 0.05 ** 2), -0.05, 0]])
-Dx = np.vstack([np.hstack([np.eye(3), dx]), np.hstack([np.zeros((3, 3)), np.eye(3)])])
 
-dy = np.array([[0, 0, 0], [0, 0, 0.1], [0, -0.1, 0]])
-Dy = np.vstack([np.hstack([np.eye(3), dy]), np.hstack([np.zeros((3, 3)), np.eye(3)])])
+def skew(x):
+    return np.array([[0, -x[2], x[1]],
+                     [x[2], 0, -x[0]],
+                     [-x[1], x[0], 0]])
 
-dz = np.array([[0, 0, np.sqrt(0.1 ** 2 - 0.05 ** 2)], [0, 0, 0.05], [-np.sqrt(0.1 ** 2 - 0.05 ** 2), -0.05, 0]])
-Dz = np.vstack([np.hstack([np.eye(3), dz]), np.hstack([np.zeros((3, 3)), np.eye(3)])])
+
+dx = skew([-0.1 * np.sin(np.pi / 6), -0.1 * np.cos(np.pi / 6), 0])
+Dx = np.vstack([np.hstack([np.eye(3), np.transpose(dx)]), np.hstack([np.zeros((3, 3)), np.eye(3)])])
+
+dy = skew([0.1, 0, 0])
+Dy = np.vstack([np.hstack([np.eye(3), np.transpose(dy)]), np.hstack([np.zeros((3, 3)), np.eye(3)])])
+
+dz = skew([-0.1 * np.sin(np.pi / 6), 0.1 * np.cos(np.pi / 6), 0])
+Dz = np.vstack([np.hstack([np.eye(3), np.transpose(dz)]), np.hstack([np.zeros((3, 3)), np.eye(3)])])
 
 D8e = [Dx, Dy, Dz]
 
@@ -409,6 +448,11 @@ T_base_z = np.eye(4)
 T_base_y = np.linalg.multi_dot([Tz(space_z), Rx(-np.pi / 2)])
 T_base_x = np.linalg.multi_dot([Ty(space_y), Ry(np.pi / 2), Rz(np.pi)])
 T_base = [T_base_x, T_base_y, T_base_z]
+
+T_tool_z = np.eye(4)
+T_tool_y = np.linalg.inv(Rx(-np.pi / 2))
+T_tool_x = np.linalg.multi_dot([np.linalg.inv(Rz(np.pi)), np.linalg.inv(Ry(np.pi / 2))])
+T_tool = [T_tool_x, T_tool_y, T_tool_z]
 
 K_active = 1000000
 
@@ -435,7 +479,7 @@ def Main():
     # Calculations
     p_global = np.array([0.5, 0.5, 0.5])
     p_fake_global = GetPlatformEdges(p_global)
-    q_passive = getInverseKinematic(T_base, p_fake_global, link_lengths)
+    q_passive = getInverseKinematic(T_base, T_tool, p_fake_global, link_lengths)
 
     x, y, z, d = CalculateDeflections(link_lengths, externalForce)
     end = time.time()
